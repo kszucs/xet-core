@@ -1371,7 +1371,6 @@ dependencies = [
  "bytes",
  "cas_client",
  "cas_types",
- "futures",
  "lazy_static",
  "merklehash",
  "more-asserts",
