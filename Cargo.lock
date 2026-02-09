@@ -1003,6 +1003,7 @@ name = "data"
 version = "0.14.5"
 dependencies = [
  "anyhow",
+ "async-stream",
  "async-trait",
  "bytes",
  "cas_client",
@@ -1015,6 +1016,7 @@ dependencies = [
  "dirs",
  "error_printer",
  "file_reconstruction",
+ "futures",
  "hub_client",
  "lazy_static",
  "mdb_shard",
@@ -1369,6 +1371,7 @@ dependencies = [
  "bytes",
  "cas_client",
  "cas_types",
+ "futures",
  "lazy_static",
  "merklehash",
  "more-asserts",
