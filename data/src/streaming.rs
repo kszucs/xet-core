@@ -205,7 +205,7 @@ impl XetReader {
             let config = config.clone();
             let merkle_hash = self.merkle_hash;
             let file_hash = self.file_hash.clone();
-            let file_range = self.file_range.clone();
+            let file_range = self.file_range;
             let progress_updater = self.progress_updater.take();
             let handle = tokio::spawn(async move {
                 let downloader = match FileDownloader::new(config).await {
@@ -239,16 +239,16 @@ impl Stream for XetReader {
 
             ReaderState::Streaming { rx, handle } => {
                 // Check the task handle first for early error detection.
-                if let Some(h) = handle {
-                    if let Poll::Ready(result) = Pin::new(h).poll(cx) {
-                        let result = result.expect("download task panicked");
-                        match result {
-                            Ok(_) => *handle = None,
-                            Err(e) => {
-                                this.state = ReaderState::Completed;
-                                return Poll::Ready(Some(Err(e)));
-                            },
-                        }
+                if let Some(h) = handle
+                    && let Poll::Ready(result) = Pin::new(h).poll(cx)
+                {
+                    let result = result.expect("download task panicked");
+                    match result {
+                        Ok(_) => *handle = None,
+                        Err(e) => {
+                            this.state = ReaderState::Completed;
+                            return Poll::Ready(Some(Err(e)));
+                        },
                     }
                 }
 
@@ -422,5 +422,22 @@ mod tests {
 
         assert!(writer.write(Bytes::from_static(b"more")).await.is_err());
         assert!(writer.close().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_sha256_returned() {
+        let temp_dir = tempdir().unwrap();
+        let endpoint = format!("local://{}", temp_dir.path().display());
+        let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
+
+        let content = b"Hello, World!";
+        let mut writer = client.write(None, None, Some(content.len() as u64)).await.unwrap();
+        writer.write(Bytes::from_static(content)).await.unwrap();
+        let file_info = writer.close().await.unwrap();
+
+        assert!(file_info.sha256().is_some(), "SHA256 hash should be present");
+        let sha256 = file_info.sha256().unwrap();
+        assert_eq!(sha256.len(), 64, "SHA256 should be 64 hex characters");
+        assert!(sha256.chars().all(|c| c.is_ascii_hexdigit()), "SHA256 should be valid hex");
     }
 }
