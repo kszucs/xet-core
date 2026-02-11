@@ -1187,4 +1187,5 @@ mod tests {
         // Middle third should have reconstructed data.
         assert_eq!(&result[start as usize..end as usize], &file_contents.data[start as usize..end as usize]);
     }
+
 }

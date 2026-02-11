@@ -74,7 +74,7 @@ pub fn new_data_writer(
                 Ok(Arc::new(SequentialWriter::new(writer, progress_updater)))
             }
         },
-        DataOutput::Channel(sender) => Ok(Arc::new(StreamingWriter::new(sender))),
+        DataOutput::ByteStream(sender) => Ok(Arc::new(StreamingWriter::new(sender))),
         DataOutput::File { path, offset } => {
             let mut file = OpenOptions::new().write(true).create(true).truncate(false).open(&path)?;
 
