@@ -249,7 +249,7 @@ pub async fn clean_bytes(
     bytes: Vec<u8>,
     name: Option<Arc<str>>,
 ) -> errors::Result<(XetFileInfo, DeduplicationMetrics)> {
-    let mut handle = processor.start_clean(name, bytes.len() as u64, None).await;
+    let mut handle = processor.start_clean(name, Some(bytes.len() as u64), None).await;
     handle.add_data(&bytes).await?;
     handle.finish().await
 }
@@ -270,7 +270,11 @@ pub async fn clean_file(
     let mut buffer = vec![0u8; u64::min(filesize, *xet_config().data.ingestion_block_size) as usize];
 
     let mut handle = processor
-        .start_clean(Some(filename.as_ref().to_string_lossy().into()), filesize, Sha256::from_hex(sha256.as_ref()).ok())
+        .start_clean(
+            Some(filename.as_ref().to_string_lossy().into()),
+            Some(filesize),
+            Sha256::from_hex(sha256.as_ref()).ok(),
+        )
         .await;
 
     loop {

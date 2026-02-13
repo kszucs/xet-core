@@ -6,8 +6,7 @@ use bytes::Bytes;
 use cas_types::FileRange;
 use file_reconstruction::DataOutput;
 use futures::stream::Stream;
-use progress_tracking::TrackingProgressUpdater;
-use progress_tracking::item_tracking::ItemProgressUpdater;
+
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use utils::auth::TokenRefresher;
@@ -56,23 +55,17 @@ impl XetClient {
         &self,
         file_info: XetFileInfo,
         file_range: Option<FileRange>,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
         stream_buffer_size: usize,
     ) -> errors::Result<XetReader> {
-        XetReader::new(self.config.clone(), file_info, file_range, progress_updater, stream_buffer_size)
+        XetReader::new(self.config.clone(), file_info, file_range, stream_buffer_size)
     }
 
     /// Creates a writer that will upload a single file.
     ///
     /// Each call creates a fresh [`FileUploadSession`] because sessions are
     /// consumed on finalization and cannot be reused.
-    pub async fn write(
-        &self,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-        name: Option<Arc<str>>,
-        size: u64,
-    ) -> errors::Result<XetWriter> {
-        XetWriter::new(self.config.clone(), progress_updater, name, size).await
+    pub async fn write(&self, name: Option<Arc<str>>) -> errors::Result<XetWriter> {
+        XetWriter::new(self.config.clone(), name).await
     }
 }
 
@@ -89,17 +82,9 @@ pub struct XetWriter {
 
 impl XetWriter {
     /// Creates a new writer that will upload a single file.
-    ///
-    /// `size` is the total number of bytes that will be written and is used for
-    /// progress tracking. The caller must know the content length before writing.
-    pub async fn new(
-        config: Arc<TranslatorConfig>,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
-        name: Option<Arc<str>>,
-        size: u64,
-    ) -> errors::Result<Self> {
-        let session = FileUploadSession::new(config, progress_updater).await?;
-        let handle = session.start_clean(name, size, None).await;
+    pub async fn new(config: Arc<TranslatorConfig>, name: Option<Arc<str>>) -> errors::Result<Self> {
+        let session = FileUploadSession::new(config, None).await?;
+        let handle = session.start_clean(name, None, None).await;
         Ok(Self {
             session: Some(session),
             handle: Some(handle),
@@ -149,7 +134,6 @@ pub struct XetReader {
     merkle_hash: merklehash::MerkleHash,
     file_hash: Arc<str>,
     file_range: Option<FileRange>,
-    progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
     state: ReaderState,
 }
 
@@ -176,7 +160,6 @@ impl XetReader {
         config: Arc<TranslatorConfig>,
         file_info: XetFileInfo,
         file_range: Option<FileRange>,
-        progress_updater: Option<Arc<dyn TrackingProgressUpdater>>,
         stream_buffer_size: usize,
     ) -> errors::Result<Self> {
         let merkle_hash = file_info.merkle_hash()?;
@@ -187,7 +170,6 @@ impl XetReader {
             merkle_hash,
             file_hash,
             file_range,
-            progress_updater,
             state: ReaderState::Init { config },
         })
     }
@@ -206,15 +188,13 @@ impl XetReader {
             let merkle_hash = self.merkle_hash;
             let file_hash = self.file_hash.clone();
             let file_range = self.file_range;
-            let progress_updater = self.progress_updater.take();
             let handle = tokio::spawn(async move {
                 let downloader = match FileDownloader::new(config).await {
                     Ok(d) => d,
                     Err(e) => return Err(e),
                 };
-                let progress_updater = progress_updater.map(ItemProgressUpdater::new);
                 downloader
-                    .smudge_file_from_hash(&merkle_hash, file_hash, output, file_range, progress_updater)
+                    .smudge_file_from_hash(&merkle_hash, file_hash, output, file_range, None)
                     .await
             });
             self.state = ReaderState::Streaming {
@@ -292,14 +272,14 @@ mod tests {
     /// Upload `content` via [`XetWriter`] and download it back via [`XetReader`],
     /// asserting the round-tripped bytes match the original.
     async fn assert_roundtrip(client: &XetClient, content: &[u8]) {
-        let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         for chunk in content.chunks(4096) {
             writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
         }
         let file_info = writer.close().await.unwrap();
         assert_eq!(file_info.file_size(), content.len() as u64);
 
-        let reader = client.read(file_info, None, None, 64).unwrap();
+        let reader = client.read(file_info, None, 64).unwrap();
         let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
         assert_eq!(chunks.concat(), content);
     }
@@ -311,7 +291,6 @@ mod tests {
             merkle_hash: Default::default(),
             file_hash: "".into(),
             file_range: None,
-            progress_updater: None,
             state: ReaderState::Streaming {
                 rx,
                 handle: Some(handle),
@@ -341,14 +320,14 @@ mod tests {
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
         let content: Vec<u8> = (0..1_000_000).map(|i| (i % 256) as u8).collect();
-        let mut writer = client.write(None, None, content.len() as u64).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         for chunk in content.chunks(4096) {
             writer.write(Bytes::copy_from_slice(chunk)).await.unwrap();
         }
         let file_info = writer.close().await.unwrap();
 
         let range = FileRange::new(1000, 5000);
-        let reader = client.read(file_info, Some(range), None, 64).unwrap();
+        let reader = client.read(file_info, Some(range), 64).unwrap();
         let chunks: Vec<Bytes> = reader.try_collect().await.unwrap();
         assert_eq!(chunks.concat(), &content[1000..5000]);
     }
@@ -359,11 +338,11 @@ mod tests {
         let endpoint = format!("local://{}", temp_dir.path().display());
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let mut writer = client.write(None, None, 5).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         writer.write(Bytes::from_static(b"hello")).await.unwrap();
         let file_info = writer.close().await.unwrap();
 
-        let mut reader = client.read(file_info, None, None, 64).unwrap();
+        let mut reader = client.read(file_info, None, 64).unwrap();
         assert!(matches!(reader.state, ReaderState::Init { .. }));
 
         let _ = reader.next().await;
@@ -416,7 +395,7 @@ mod tests {
         let endpoint = format!("local://{}", temp_dir.path().display());
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
-        let mut writer = client.write(None, None, 100).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         writer.write(Bytes::from_static(b"some data")).await.unwrap();
         writer.abort().await.unwrap();
 
@@ -431,7 +410,7 @@ mod tests {
         let client = XetClient::new(Some(endpoint), None, None, "test".into()).unwrap();
 
         let content = b"Hello, World!";
-        let mut writer = client.write(None, None, Some(content.len() as u64)).await.unwrap();
+        let mut writer = client.write(None).await.unwrap();
         writer.write(Bytes::from_static(content)).await.unwrap();
         let file_info = writer.close().await.unwrap();
 
